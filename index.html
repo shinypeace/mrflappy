@@ -102,8 +102,6 @@
 
         .close-button-wrapper { margin-top: 15px; flex-shrink: 0; width: 100%;}
         .stats-content, .info-content { text-align: left; margin: 20px 0; font-size: 1.1rem; line-height: 1.6; }
-
-        /* СТИЛЬ ДЛЯ ОТОБРАЖЕНИЯ ЦЕНЫ В ГОЛОСАХ */
         .coin-package { display: flex; justify-content: space-between; align-items: center; }
         .price-tag { font-size: 1rem; font-weight: 700; background: rgba(0,0,0,0.1); padding: 5px 10px; border-radius: 10px; }
     </style>
@@ -177,8 +175,7 @@
 
     <div id="coinsPanel" class="panel">
         <h2>Купить монеты</h2>
-        <div class="button-container" id="coinPackagesContainer">
-            </div>
+        <div class="button-container" id="coinPackagesContainer"></div>
         <button id="closeCoinsBtn" class="button" style="background: #E8E8E8; border-bottom-color: #C4C4C4; margin-top: 20px;">Назад</button>
     </div>
 
@@ -205,10 +202,10 @@
         const birdPhysics = { GRAVITY: 0.7, LIFT: -11, ROTATION_SPEED: 0.1 };
 
         const COIN_PACKAGES = {
-            "coins_100": { amount: 100, price: 7 },    // 7 голосов
-            "coins_300": { amount: 300, price: 21 },   // 21 голос
-            "coins_500": { amount: 500, price: 35 },   // 35 голосов
-            "coins_1000": { amount: 1000, price: 70 } // 70 голосов
+            "coins_100": { amount: 100, price: 7 },
+            "coins_300": { amount: 300, price: 21 },
+            "coins_500": { amount: 500, price: 35 },
+            "coins_1000": { amount: 1000, price: 70 }
         };
 
         let vkUser = null;
@@ -218,6 +215,7 @@
         const birdImages = Array(BIRD_COUNT).fill().map((_, i) => { const img = new Image(); img.src = `bird${i}.png`; return img; });
         const backgroundImages = Array(BACKGROUND_COUNT).fill().map((_, i) => { const img = new Image(); img.src = `background${i}.png`; return img; });
 
+        // --- ИНИЦИАЛИЗАЦИЯ VK BRIDGE И ЗАГРУЗКА ДАННЫХ ---
         try {
             await vkBridge.send('VKWebAppInit');
             vkUser = await vkBridge.send('VKWebAppGetUserInfo');
@@ -226,6 +224,7 @@
             console.warn('VK Bridge failed. Running in guest mode.', error);
         }
 
+        // --- ЛОГИКА СОХРАНЕНИЯ/ЗАГРУЗКИ ---
         async function saveGameProgress() {
             if (!vkUser) return localStorage.setItem('flappy_reforged_guest', JSON.stringify(playerProgress));
             const storageKey = `flappy_reforged_${vkUser.id}`;
@@ -234,7 +233,11 @@
         }
 
         async function loadGameProgress() {
-            if (!vkUser) return playerProgress = { ...playerProgress, ...JSON.parse(localStorage.getItem('flappy_reforged_guest')) };
+            if (!vkUser) {
+                const guestData = localStorage.getItem('flappy_reforged_guest');
+                if (guestData) playerProgress = { ...playerProgress, ...JSON.parse(guestData) };
+                return;
+            }
             const storageKey = `flappy_reforged_${vkUser.id}`;
             try {
                 const response = await vkBridge.send('VKWebAppStorageGet', { keys: [storageKey] });
@@ -247,18 +250,16 @@
             }
         }
         
+        // --- ЛОГИКА ПЛАТЕЖЕЙ VK ---
         async function buyCoins(item) {
             try {
                 await vkBridge.send('VKWebAppShowOrderBox', { type: 'item', item: item });
-                // Важно: Начисление монет должно происходить через Callback API на вашем сервере,
-                // а не здесь. Этот вызов только открывает окно оплаты.
-                // Клиент обновляет UI после получения уведомления от сервера или при перезапуске.
             } catch (error) {
                 console.error('Ошибка покупки:', error);
-                // Можно показать уведомление пользователю
             }
         }
 
+        // --- ОСНОВНОЙ ИГРОВОЙ ЦИКЛ ---
         function gameLoop(timestamp) {
             if (state.isGameOver || state.isPaused) return;
             const deltaTime = (timestamp - (state.lastTime || timestamp)) / 1000;
@@ -269,11 +270,18 @@
         }
 
         function update(dt) {
+            // Физика птицы
             state.bird.velocity += birdPhysics.GRAVITY;
             state.bird.y += state.bird.velocity;
             state.bird.angle = Math.min(Math.max(state.bird.velocity / 15, -Math.PI / 4), Math.PI / 2);
+            
+            // Генерация и движение труб
             const spawnInterval = 1.5 * (gameConfig.SPEED_EASY / state.pipeSpeed);
-            if ((state.pipeTimer += dt) > spawnInterval) { addPipe(); state.pipeTimer = 0; }
+            if ((state.pipeTimer += dt) > spawnInterval) {
+                addPipe();
+                state.pipeTimer = 0;
+            }
+            
             state.pipes.forEach(pipe => {
                 pipe.top.x -= state.pipeSpeed;
                 pipe.bottom.x -= state.pipeSpeed;
@@ -284,30 +292,53 @@
                     pipe.bottom.y = pipe.top.height + state.gap;
                 }
             });
+
             state.pipes = state.pipes.filter(pipe => pipe.top.x + gameConfig.PIPE_WIDTH > 0);
+            
+            // Проверка столкновений и счета
             const passedPipe = state.pipes.find(p => p.top.x + gameConfig.PIPE_WIDTH < state.bird.x && !p.passed);
-            if (passedPipe) { passedPipe.passed = true; state.score++; updateCoins(); }
-            if (checkCollision()) { endGame(); }
+            if (passedPipe) {
+                passedPipe.passed = true;
+                state.score++;
+                updateCoins();
+            }
+            if (checkCollision()) {
+                endGame();
+            }
         }
 
         function draw() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(backgroundImages[playerProgress.selectedBackgroundIndex], 0, 0, canvas.width, canvas.height);
+            
+            // ВОССТАНОВЛЕНА ОТРИСОВКА ТРУБ
+            ctx.fillStyle = '#73BF2E';
+            const pipeHeadHeight = 25;
             state.pipes.forEach(pipe => {
-                ctx.fillStyle = '#73BF2E';
+                // Тело трубы
                 ctx.fillRect(pipe.top.x, 0, gameConfig.PIPE_WIDTH, pipe.top.height);
                 ctx.fillRect(pipe.bottom.x, pipe.bottom.y, gameConfig.PIPE_WIDTH, canvas.height - pipe.bottom.y);
+                // "Шляпка" трубы
+                ctx.fillRect(pipe.top.x - 5, pipe.top.height - pipeHeadHeight, gameConfig.PIPE_WIDTH + 10, pipeHeadHeight);
+                ctx.fillRect(pipe.bottom.x - 5, pipe.bottom.y, gameConfig.PIPE_WIDTH + 10, pipeHeadHeight);
             });
+
             ctx.save();
             ctx.translate(state.bird.x + state.bird.width / 2, state.bird.y + state.bird.height / 2);
             ctx.rotate(state.bird.angle);
             ctx.drawImage(birdImages[playerProgress.selectedBirdIndex], -state.bird.width / 2, -state.bird.height / 2, state.bird.width, state.bird.height);
             ctx.restore();
-            ctx.fillStyle = 'white'; ctx.font = '45px ' + 'Nunito'; ctx.textAlign = 'center';
-            ctx.fillText(state.score, canvas.width / 2, 70);
+            
+            ctx.fillStyle = 'white';
+            ctx.font = '45px ' + 'Nunito';
+            ctx.textAlign = 'center';
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#000';
             ctx.strokeText(state.score, canvas.width / 2, 70);
+            ctx.fillText(state.score, canvas.width / 2, 70);
         }
 
+        // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
         function startGame(difficulty) {
             state.currentDifficulty = difficulty;
             switch (difficulty) {
@@ -351,8 +382,15 @@
             if (state.score > 0 && state.score % threshold === 0) { state.coinsEarned++; }
         }
 
+        // --- ОБРАБОТЧИКИ UI ---
         function hideAllPanels() { Object.values(dom).forEach(panel => panel.classList.remove('active')); }
         function updateCoinDisplay() { document.getElementById('coinDisplay').innerHTML = `${playerProgress.totalCoins} 💰`; }
+        
+        function updateStatsPanel() {
+            document.getElementById('easyStats').textContent = playerProgress.highScores.easy;
+            document.getElementById('mediumStats').textContent = playerProgress.highScores.medium;
+            document.getElementById('hardStats').textContent = playerProgress.highScores.hard;
+        }
         
         function generateShopItems(tabId, count, type) {
             const grid = document.querySelector(`#${tabId} .shop-grid`);
@@ -398,6 +436,10 @@
                     item.classList.remove('locked');
                     item.querySelector('.shop-item-content').style.filter = 'none';
                     item.querySelector('img').src = type === 'bird' ? `bird${index}.png` : `background${index}.png`;
+                    item.querySelector('p')?.remove();
+                    const p = document.createElement('p');
+                    p.textContent = 'Выбрать';
+                    item.querySelector('.shop-item-content').appendChild(p);
                     saveGameProgress();
                     updateCoinDisplay();
                 } else {
@@ -441,16 +483,21 @@
         }
 
         function setupUIListeners() {
-            document.addEventListener('keydown', e => { if (e.key === ' ' || e.key === 'ArrowUp') state.bird.velocity = birdPhysics.LIFT; });
-            canvas.addEventListener('touchstart', e => { e.preventDefault(); state.bird.velocity = birdPhysics.LIFT; });
+            document.addEventListener('keydown', e => { if ((e.key === ' ' || e.key === 'ArrowUp') && !state.isGameOver) state.bird.velocity = birdPhysics.LIFT; });
+            canvas.addEventListener('mousedown', e => { if (!state.isGameOver) { e.preventDefault(); state.bird.velocity = birdPhysics.LIFT; } });
+            canvas.addEventListener('touchstart', e => { if (!state.isGameOver) { e.preventDefault(); state.bird.velocity = birdPhysics.LIFT; } });
+            
             document.getElementById('easyBtn').addEventListener('click', () => startGame('easy'));
             document.getElementById('mediumBtn').addEventListener('click', () => startGame('medium'));
             document.getElementById('hardBtn').addEventListener('click', () => startGame('hard'));
+            
             document.getElementById('restartBtn').addEventListener('click', () => startGame(state.currentDifficulty));
             document.getElementById('menuBtn').addEventListener('click', () => { hideAllPanels(); dom.mainMenu.classList.add('active'); drawInitialBackground(); });
+            
             document.getElementById('shareBtn').addEventListener('click', () => {
-                 vkBridge.send('VKWebAppShare', { link: `https://vk.com/app${APP_ID}#ref=wall` });
+                 vkBridge.send('VKWebAppShare', { link: `https://vk.com/app${APP_ID}` });
             });
+
             document.querySelectorAll('.tab-button').forEach(btn => {
                 btn.addEventListener('click', () => {
                     document.querySelector('.tab-button.active').classList.remove('active');
@@ -460,23 +507,32 @@
                 });
             });
             document.getElementById('shopPanel').addEventListener('click', handleShopSelection);
+            
             const panelButtons = [
-                { btn: 'shopBtn', open: 'shopPanel', close: 'mainMenu' }, { btn: 'statsBtn', open: 'statsPanel', close: 'mainMenu' },
-                { btn: 'infoBtn', open: 'infoPanel', close: 'mainMenu' }, { btn: 'closeShopBtn', open: 'mainMenu', close: 'shopPanel' },
-                { btn: 'closeStatsBtn', open: 'mainMenu', close: 'statsPanel' }, { btn: 'closeInfoBtn', open: 'mainMenu', close: 'infoPanel' },
-                { btn: 'coinsBtn', open: 'coinsPanel', close: 'shopPanel' }, { btn: 'closeCoinsBtn', open: 'shopPanel', close: 'coinsPanel' }
+                { btn: 'shopBtn', open: 'shopPanel', close: 'mainMenu' },
+                { btn: 'statsBtn', open: 'statsPanel', close: 'mainMenu', action: updateStatsPanel },
+                { btn: 'infoBtn', open: 'infoPanel', close: 'mainMenu' },
+                { btn: 'closeShopBtn', open: 'mainMenu', close: 'shopPanel' },
+                { btn: 'closeStatsBtn', open: 'mainMenu', close: 'statsPanel' },
+                { btn: 'closeInfoBtn', open: 'mainMenu', close: 'infoPanel' },
+                { btn: 'coinsBtn', open: 'coinsPanel', close: 'shopPanel' },
+                { btn: 'closeCoinsBtn', open: 'shopPanel', close: 'coinsPanel' }
             ];
-            panelButtons.forEach(({btn, open, close}) => {
+            
+            panelButtons.forEach(({btn, open, close, action}) => {
                 document.getElementById(btn).addEventListener('click', (e) => {
                     e.stopPropagation();
-                    hideAllPanels();
+                    if (close) document.getElementById(close).classList.remove('active');
                     document.getElementById(open).classList.add('active');
+                    if (action) action();
                 });
             });
+
             document.getElementById('coinsPanel').addEventListener('click', e => {
                 const button = e.target.closest('.coin-package');
                 if (button) buyCoins(button.dataset.item);
             });
+            
             document.getElementById('earnButton').addEventListener('click', async () => {
                 playerProgress.totalCoins += 100;
                 updateCoinDisplay();
@@ -484,6 +540,7 @@
             });
         }
         
+        // --- ЗАПУСК ---
         hideAllPanels();
         dom.mainMenu.classList.add('active');
         updateCoinDisplay();
